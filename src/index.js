@@ -2,6 +2,9 @@ const path = require('path');
 const http = require('http');
 const express = require('express');
 const socketio = require('socket.io');
+const Filter = require('bad-words');
+const { generateMessage, generateLocationMessage } = require('./utils/messages');
+const { addUser, removeUser, getUser, getUsersInRoom } = require('../src/utils/users');
 
 const app = express();
 const server = http.createServer(app);
@@ -15,18 +18,62 @@ const publicDirectoryPath = path.join(__dirname, '../public');
 // Setup static directory to serve
 app.use(express.static(publicDirectoryPath));
 
-let count = 0;
-
-// server (emit) -> client (receive) - countUpdated
-// client (emit) -> server (receive) - increment
-
 io.on('connection', (socket) => {
   console.log('New WebSocket connection');
-  socket.emit('countUpdated', count);
-  socket.on('increment', () => {
-    count++;
-    // socket.emit('countUpdated', count);
-    io.emit('countUpdated', count);
+
+  socket.on('join', (options, callback) => {
+    const { error, user } = addUser({ id: socket.id, ...options });
+
+    if (error) {
+      return callback(error);
+    }
+
+    socket.join(user.room);
+    
+    // Welcome Message
+    socket.emit('message', generateMessage('Admin', 'Welcome!'));
+
+    // User Has Joined The Chat
+    socket.broadcast.to(user.room).emit('message', generateMessage('Admin', `${user.username} has joined!`));
+    io.to(user.room).emit('roomData', {
+      room: user.room,
+      users: getUsersInRoom(user.room)
+    });
+
+    callback();
+  });
+
+  // Instant Message
+  socket.on('sendMessage', (instMsg, callback) => {
+    const user = getUser(socket.id);
+    const filter = new Filter();
+
+    if (filter.isProfane(instMsg)) {
+      return callback('Profanity is not allowed!');
+    }
+    
+    io.to(user.room).emit('message', generateMessage(user.username, instMsg));
+    callback();
+  });
+
+  // Shared Location
+  socket.on('sendLocation', (coords, callback) => {
+    const user = getUser(socket.id);
+    io.to(user.room).emit('locationMessage', generateLocationMessage(user.username, `https://google.com/maps?q=${coords.latitude},${coords.longitude}`));
+    callback();
+  });
+
+  // User Has Left The Chat
+  socket.on('disconnect', () => {
+    const user = removeUser(socket.id);
+
+    if (user) {
+      io.to(user.room).emit('message', generateMessage('Admin', `${user.username} has left the chatroom.`));
+      io.to(user.room).emit('roomData', {
+        room: user.room,
+        users: getUsersInRoom(user.room)
+      });
+    }
   });
 });
 
